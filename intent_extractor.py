@@ -57,22 +57,29 @@ Available tools:
 11. focus_window   — Bring a window to the foreground by title.
     args: { "title": "<partial window title>" }
 
-12. find_element   — Use vision model to locate a UI element on screen.
+12. close_window   — Close an application window by title, or close the active window.
+    args: { "title": "<partial window title>" }
+    OR: {} (to close active window)
+    Example: close_window with title="Chrome" closes Chrome.
+
+13. find_element   — Use vision model to locate a UI element on screen.
     args: { "element": "<description of element to find>" }
 
-13. click_search_bar — Use a trained ML model (Random Forest) to detect the search bar on screen and click it.
+14. click_search_bar — Use a trained ML model (Random Forest) to detect the search bar on screen and click it.
     args: {}
     USE THIS whenever the user wants to search within a website like YouTube, Google, etc.
 
-14. click_element  — Detect all UI elements on screen with the ML model and click one by index.
+15. click_element  — Detect all UI elements on screen with the ML model and click one by index.
     args: { "element_index": <int> }
 
 Rules:
 - Output ONLY valid JSON: { "commands": [ { "tool": "...", "args": { ... } }, ... ] }
 - Break complex instructions into small atomic steps in the correct order.
+- When the user says to close an app by name, use "close_window" with the app name (e.g., "close chrome").
+- When the user says "close it" or just "close", use "close_window" with NO title argument {} to close the currently active/foreground window.
 - When the user says to click on something described visually (a button, link, thumbnail, etc.), use "click" with "element" arg, NOT coordinates.
 - Add "wait" (1 second) after open_app to let the app launch.
-- Add "wait" (3 seconds) after pressing enter to navigate to a website URL (e.g. after typing youtube.com and pressing enter). The page needs time to fully load before interacting with it.
+- Add "wait" (4 seconds) after pressing enter to navigate to a website URL (e.g. after typing youtube.com and pressing enter). The page needs time to fully load before interacting with it.
 - After typing in a browser address bar, use press_key "enter" to navigate, then "wait" 3 seconds for the page to load.
 - When searching within a website (YouTube, Google, etc.):
   1. WAIT for the page to fully load first (add "wait" 3 seconds after navigating to the site).

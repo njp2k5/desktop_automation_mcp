@@ -2,6 +2,8 @@
 Main Orchestrator — Wires together STT → Intent Extraction → MCP Tool Execution.
 This is the entry point that runs the full voice automation pipeline.
 
+
+
 Usage:
     python main.py                  # Voice mode (continuous listening)
     python main.py --once           # Single command mode
@@ -134,8 +136,19 @@ class ToolExecutor:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-            time.sleep(1.5)
-            return f"Launched '{app_name}'"
+            time.sleep(2.5)  # Wait for app to fully launch
+            
+            # Maximize window for certain apps
+            if key in ("chrome", "google chrome", "firefox", "edge"):
+                try:
+                    windows = gw.getWindowsWithTitle(executable.replace(".exe", ""))
+                    if windows:
+                        windows[0].maximize()
+                        time.sleep(0.5)
+                except Exception:
+                    pass  # If maximize fails, still report success
+            
+            return f"Launched '{app_name}' in full screen"
         except Exception as e:
             return f"Failed to open '{app_name}': {e}"
 
@@ -250,18 +263,75 @@ class ToolExecutor:
             return f"Focus failed: {e}"
 
     def _close_window(self, title: str = None) -> str:
+        import subprocess
+        
         if title:
+            # Try to find and close the window by title
             windows = gw.getWindowsWithTitle(title)
             if windows:
+                window_title = windows[0].title
                 try:
+                    # Method 1: Try pygetwindow close (may fail on some apps)
                     windows[0].close()
-                    return f"Closed: '{windows[0].title}'"
+                    time.sleep(0.5)
+                    # Verify window actually closed
+                    windows_after = gw.getWindowsWithTitle(title)
+                    if not windows_after:
+                        return f"Closed: '{window_title}'"
                 except Exception as e:
-                    return f"Close failed: {e}"
-            return f"No window matching '{title}'"
-        # Close active window
-        pyautogui.hotkey("alt", "F4")
-        return "Closed active window"
+                    print(f"[Exec] ⚠️  pygetwindow.close() failed: {e}, trying alternative method...")
+                
+                # Method 2: Use taskkill as fallback (more reliable on Windows)
+                try:
+                    # Extract process name from title (e.g., "page - Google Chrome" -> "chrome.exe")
+                    app_name = title.lower().strip()
+                    app_map = {
+                        "chrome": "chrome.exe",
+                        "firefox": "firefox.exe",
+                        "edge": "msedge.exe",
+                        "notepad": "notepad.exe",
+                        "explorer": "explorer.exe",
+                        "code": "code.exe",
+                    }
+                    
+                    # Find matching app
+                    process_name = None
+                    for key, exe in app_map.items():
+                        if key in app_name:
+                            process_name = exe
+                            break
+                    
+                    if process_name:
+                        subprocess.run(
+                            ["taskkill", "/IM", process_name, "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5
+                        )
+                        time.sleep(0.5)
+                        return f"Closed: '{window_title}' (via taskkill)"
+                except Exception as e:
+                    print(f"[Exec] ⚠️  taskkill failed: {e}")
+                
+                # Method 3: Focus and send Alt+F4
+                try:
+                    windows[0].activate()
+                    time.sleep(0.3)
+                    pyautogui.hotkey("alt", "F4")
+                    time.sleep(0.5)
+                    return f"Closed: '{window_title}' (via Alt+F4)"
+                except Exception as e:
+                    return f"Could not close '{window_title}': {e}"
+            
+            return f"No window matching '{title}' found"
+        
+        # Close active window (Alt+F4)
+        try:
+            pyautogui.hotkey("alt", "F4")
+            time.sleep(0.5)
+            return "Closed active window"
+        except Exception as e:
+            return f"Could not close active window: {e}"
 
     def _get_window_list(self) -> str:
         result = []
@@ -369,15 +439,18 @@ class ToolExecutor:
     def _click_element(self, element_index: int = 0) -> str:
         if not self.rf_detector:
             return "RF model not loaded"
-        detections = self.rf_detector.detect_screenshot()
-        if not detections:
-            return "No UI elements detected"
-        if element_index >= len(detections):
-            return f"Index {element_index} out of range ({len(detections)} detected)"
-        target = detections[element_index]
-        cx, cy = target["center"]["x"], target["center"]["y"]
-        pyautogui.click(cx, cy)
-        return f"Clicked '{target['label']}' at ({cx}, {cy})"
+        try:
+            detections = self.rf_detector.detect_screenshot()
+            if not detections:
+                return "No UI elements detected on screen"
+            if element_index >= len(detections):
+                return f"Index {element_index} out of range ({len(detections)} detected). Try index 0-{len(detections)-1}"
+            target = detections[element_index]
+            cx, cy = target["center"]["x"], target["center"]["y"]
+            pyautogui.click(cx, cy)
+            return f"Clicked '{target['label']}' at ({cx}, {cy})"
+        except Exception as e:
+            return f"Click element failed: {e}"
 
     def _click_search_bar(self) -> str:
         """Find and click search bar using RF detector, retrying up to 3 times."""
@@ -411,11 +484,15 @@ class ToolExecutor:
 
     def _click_on_element(self, element_desc: str) -> str:
         """Try to find and click a described element."""
-        loc = self._locate_element(element_desc)
-        if loc:
-            pyautogui.click(loc[0], loc[1])
-            return f"Clicked '{element_desc}' at ({loc[0]}, {loc[1]})"
-        return f"Could not find '{element_desc}' — try giving coordinates"
+        try:
+            loc = self._locate_element(element_desc)
+            if loc:
+                pyautogui.click(loc[0], loc[1])
+                return f"Clicked '{element_desc}' at ({loc[0]}, {loc[1]})"
+            # If detection fails, provide helpful message
+            return f"Could not find '{element_desc}' on screen. Try using coordinates or click_search_bar instead."
+        except Exception as e:
+            return f"Click on element failed: {e}"
 
     def _locate_element(self, description: str):
         """
@@ -426,38 +503,42 @@ class ToolExecutor:
         if not self.rf_detector:
             return None
 
-        import mss, cv2
-        import numpy as np
-        with mss.mss() as sct:
-            monitor = sct.monitors[1]
-            img = sct.grab(monitor)
-            frame = np.array(img)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        try:
+            import mss, cv2
+            import numpy as np
+            with mss.mss() as sct:
+                monitor = sct.monitors[1]
+                img = sct.grab(monitor)
+                frame = np.array(img)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
-        # Map description to class name
-        desc_lower = description.lower()
-        class_map = {
-            "search": "search_bar", "search bar": "search_bar",
-            "button": "button", "text field": "text_field",
-            "text box": "text_field", "input": "text_field",
-            "video": "video_thumbnail", "thumbnail": "video_thumbnail",
-            "link": "link", "icon": "icon", "tab": "tab",
-            "address bar": "address_bar", "url bar": "address_bar",
-            "menu": "menu_item",
-        }
+            # Map description to class name
+            desc_lower = description.lower()
+            class_map = {
+                "search": "search_bar", "search bar": "search_bar",
+                "button": "button", "text field": "text_field",
+                "text box": "text_field", "input": "text_field",
+                "video": "video_thumbnail", "thumbnail": "video_thumbnail",
+                "link": "link", "icon": "icon", "tab": "tab",
+                "address bar": "address_bar", "url bar": "address_bar",
+                "menu": "menu_item",
+            }
 
-        target_class = None
-        for key, cls in class_map.items():
-            if key in desc_lower:
-                target_class = cls
-                break
+            target_class = None
+            for key, cls in class_map.items():
+                if key in desc_lower:
+                    target_class = cls
+                    break
 
-        if target_class:
-            result = self.rf_detector.find_element(frame, target_class)
-            if result:
-                return (result["center"]["x"], result["center"]["y"])
+            if target_class:
+                result = self.rf_detector.find_element(frame, target_class)
+                if result:
+                    return (result["center"]["x"], result["center"]["y"])
 
-        return None
+            return None
+        except Exception as e:
+            print(f"[Exec] ⚠️  Element location failed: {e}")
+            return None
 
 
 # ── Main pipeline ───────────────────────────────────────────────────
